@@ -1,9 +1,11 @@
-cmake_minimum_required(VERSION 3.4)
+cmake_minimum_required(VERSION 3.12)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-option(BUILD_COVERAGE "Build coverage" OFF)
+option(BUILD_TESTS "Build tests" ON)
+option(BUILD_DOCS "Build documentation" OFF)
+option(BUILD_COVERAGE "Build code coverage" OFF)
 
 set(
         HUNTER_CACHE_SERVERS
@@ -11,105 +13,85 @@ set(
         CACHE STRING "Default cache server"
 )
 
-include("tools/gate/cmake/HunterGate.cmake")
+include("cmake/HunterGate.cmake")
 
 HunterGate(
         URL "https://github.com/cpp-pm/hunter/archive/v0.23.278.tar.gz"
         SHA1 "35fa55bc1dfcf9f4d7264f8bb26cd1759ce1ae07"
 )
 
-project(producer-consumer_lib)
+project(web-crawler VERSION 0.1.0)
 string(APPEND CMAKE_CXX_FLAGS " -pedantic -Werror -Wall -Wextra")
 string(APPEND CMAKE_CXX_FLAGS " -Wno-unused-command-line-argument")
 string(APPEND CMAKE_CXX_FLAGS " -Wshadow -Wnon-virtual-dtor")
 
+hunter_add_package(gumbo)
+find_package(gumbo CONFIG REQUIRED)
+hunter_add_package(asio)
+find_package(asio CONFIG REQUIRED)
+hunter_add_package(Beast)
+find_package(Beast CONFIG REQUIRED)
+hunter_add_package(Boost COMPONENTS program_options)
+find_package(Boost CONFIG REQUIRED program_options)
 hunter_add_package(GTest)
 find_package(GTest CONFIG REQUIRED)
 
-hunter_add_package(Boost COMPONENTS filesystem system thread program_options)
-find_package(Boost CONFIG REQUIRED filesystem system thread program_options)
+file(GLOB_RECURSE PROJECT_LIB_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/sources/lib/*.cpp")
+add_library(${PROJECT_NAME}-lib STATIC ${PROJECT_LIB_SOURCES})
 
-hunter_add_package(Beast)
-find_package(Beast CONFIG REQUIRED)
+file(GLOB_RECURSE PROJECT_APP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/sources/app/*.cpp")
+add_executable(${PROJECT_NAME}-app ${PROJECT_APP_SOURCES})
 
-hunter_add_package(gumbo)
-find_package(gumbo CONFIG REQUIRED)
-
-hunter_add_package(thread-pool-cpp)
-find_package(thread-pool-cpp CONFIG REQUIRED)
-
-hunter_add_package(asio)
-find_package(asio CONFIG REQUIRED)
-
-add_library(producer-consumer_lib STATIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/sources/source.cpp
-        )
-add_executable(tests
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test.cpp
-        )
-add_executable(producer-consumer_exe
-        ${CMAKE_CURRENT_SOURCE_DIR}/sources/source.cpp
-        )
-add_executable(app_exe
-        ${CMAKE_CURRENT_SOURCE_DIR}/sources/app/main.cpp
+target_include_directories(${PROJECT_NAME}-lib PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+        "$<INSTALL_INTERFACE:include>"
         )
 
-target_include_directories(producer-consumer_lib
-        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-        )
-target_include_directories(producer-consumer_exe
-        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-        )
-target_include_directories(app_exe
-        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-        )
-target_include_directories(tests
-        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-        )
+target_link_libraries(${PROJECT_NAME}-lib gumbo::gumbo asio::asio_headeronly Beast::Beast)
+target_link_libraries(${PROJECT_NAME}-app asio::asio_static ${PROJECT_NAME}-lib Boost::program_options)
 
-target_link_libraries(tests GTest::gtest_main producer-consumer_lib)
-target_link_libraries(producer-consumer_lib
-        Boost::filesystem
-        Boost::system
-        Boost::thread
-        Boost::program_options
-        Beast::Beast
-        gumbo::gumbo
-        thread-pool-cpp::thread-pool-cpp)
-target_link_libraries(producer-consumer_exe
-        Boost::filesystem
-        Boost::system
-        Boost::thread
-        Boost::program_options
-        Beast::Beast
-        gumbo::gumbo
-        thread-pool-cpp::thread-pool-cpp
-        producer-consumer_lib)
-target_link_libraries(app_exe
-        Boost::filesystem
-        Boost::system
-        Boost::thread
-        Boost::program_options
-        Beast::Beast
-        gumbo::gumbo
-        thread-pool-cpp::thread-pool-cpp
-        producer-consumer_lib)
-
-enable_testing()
-add_test(NAME unit_tests COMMAND tests)
+if (BUILD_TESTS)
+    file(GLOB_RECURSE PROJECT_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
+    add_executable(tests ${PROJECT_TEST_SOURCES})
+    target_link_libraries(tests ${PROJECT_NAME}-lib GTest::gtest_main)
+    enable_testing()
+    add_test(NAME unit_tests COMMAND tests)
+endif ()
 
 if (BUILD_COVERAGE)
-    function(ENABLE_PROJECT_COVERAGE PROJECT)
-        target_compile_options(${PROJECT} PRIVATE --coverage)
-        target_link_libraries(${PROJECT} --coverage)
-        add_coverage(${PROJECT})
-    endfunction()
-
     set(ENABLE_COVERAGE ON CACHE BOOL "Enable coverage build." FORCE)
-    list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/tools/coverage/cmake")
     find_package(codecov)
-    enable_project_coverage(producer-consumer_lib)
-    enable_project_coverage(tests)
-    list(APPEND LCOV_REMOVE_PATTERNS "'${PROJECT_SOURCE_DIR}/tests/*'")
+    add_coverage(${PROJECT_NAME}-lib)
+    add_coverage(tests)
+    add_coverage(${PROJECT_NAME}-app)
     coverage_evaluate()
 endif ()
+
+if (BUILD_DOCS)
+    set(DOXYGEN_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/_docs)
+    set(DOXYGEN_EXAMPLE_PATH examples)
+    set(DOXYGEN_GENERATE_HTML NO)
+    set(DOXYGEN_GENERATE_MAN YES)
+    find_package(Doxygen)
+    doxygen_add_docs(docs include)
+    install(DIRECTORY ${DOXYGEN_OUTPUT_DIRECTORY}/man DESTINATION share)
+    # add_dependencies(install docs) need to call target docs before install or package
+endif ()
+
+include(CPackConfig.cmake)
+
+install(TARGETS ${PROJECT_NAME}-lib ${PROJECT_NAME}-app
+        EXPORT "${PROJECT_NAME}-lib-targets"
+        RUNTIME DESTINATION bin
+        ARCHIVE DESTINATION lib
+        LIBRARY DESTINATION lib
+        INCLUDES DESTINATION include
+        )
+
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/ DESTINATION include)
+
+install(EXPORT "${PROJECT_NAME}-lib-targets"
+        NAMESPACE "${PROJECT_NAME}::"
+        DESTINATION "lib/cmake"
+        )
